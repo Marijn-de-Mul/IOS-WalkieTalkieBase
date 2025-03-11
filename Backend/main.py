@@ -52,13 +52,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"Received data from non-sender: {websocket.client}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
 @app.websocket("/ws/control")
 async def websocket_control(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await websocket.receive()
+            except RuntimeError as e:
+                if "Cannot call" in str(e):
+                    # A disconnect message has already been received.
+                    break
+                else:
+                    raise e
             if "text" in message:
                 data = message["text"]
                 print(f"Received control message: {data} from {websocket.client}")
@@ -71,7 +77,6 @@ async def websocket_control(websocket: WebSocket):
                     manager.clear_sender(websocket)
                     await websocket.send_text("stop_ack")
             elif "bytes" in message:
-                # If binary data arrives on the control connection and this is the sender, broadcast it.
                 data = message["bytes"]
                 print(f"Received binary data on control channel: {len(data)} bytes from {websocket.client}")
                 if manager.current_sender == websocket:
@@ -79,4 +84,6 @@ async def websocket_control(websocket: WebSocket):
                 else:
                     print(f"Binary data received from non-sender: {websocket.client}")
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    finally:
         manager.disconnect(websocket)
