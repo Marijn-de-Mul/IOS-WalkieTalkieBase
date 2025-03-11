@@ -11,25 +11,30 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        print(f"Client connected: {websocket.client}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
         if self.current_sender == websocket:
             self.current_sender = None
+        print(f"Client disconnected: {websocket.client}")
 
     async def broadcast(self, data: bytes):
         for connection in self.active_connections:
             await connection.send_bytes(data)
+        print(f"Broadcasted data: {len(data)} bytes to {len(self.active_connections)} clients")
 
     async def set_sender(self, websocket: WebSocket):
         if self.current_sender is None:
             self.current_sender = websocket
+            print(f"Sender set: {websocket.client}")
             return True
         return False
 
     def clear_sender(self, websocket: WebSocket):
         if self.current_sender == websocket:
             self.current_sender = None
+            print(f"Sender cleared: {websocket.client}")
 
 manager = ConnectionManager()
 
@@ -39,6 +44,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_bytes()
+            print(f"Received data: {len(data)} bytes from {websocket.client}")
             if manager.current_sender == websocket:
                 await manager.broadcast(data)
     except WebSocketDisconnect:
@@ -50,6 +56,7 @@ async def websocket_control(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
+            print(f"Received control message: {data} from {websocket.client}")
             if data == "start":
                 if await manager.set_sender(websocket):
                     await websocket.send_text("start_ack")
