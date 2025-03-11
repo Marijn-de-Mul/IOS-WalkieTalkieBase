@@ -2,114 +2,60 @@ import SwiftUI
 import AVFoundation
 
 struct ContentView: View {
+    @StateObject var networkManager = NetworkManager()
     @State private var isRecording = false
-    @State private var isReceiving = false
-    @State private var audioRecorder: AVAudioRecorder?
-    @State private var audioPlayer: AVAudioPlayer?
-    @State private var isBusy = false
-
+    
     var body: some View {
-        VStack {
-            Text(isReceiving ? "Receiving Audio..." : "Idle")
-                .font(.headline)
-                .foregroundColor(isReceiving ? .blue : .gray)
+        VStack(spacing: 20) {
+            Text(isRecording ? "Recording..." : "Idle")
+                .font(.title)
                 .padding()
-
-            Spacer()
-
-            ZStack {
-                Circle()
-                    .fill(isRecording ? Color.red : Color.green)
-                    .frame(width: 150, height: 150)
-                    .shadow(radius: 10)
-
-                Text(isRecording ? "Recording..." : "Press to Talk")
-                    .foregroundColor(.white)
+            Button(action: toggleRecording) {
+                Text(isRecording ? "Stop" : "Press to Talk")
                     .font(.headline)
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(isRecording ? Color.red : Color.green)
+                    .cornerRadius(10)
             }
-            .onTapGesture {
-                isRecording.toggle()
-                if isRecording {
-                    startRecording()
-                } else {
-                    stopRecording()
+            List {
+                ForEach(Array(networkManager.logMessages.enumerated()), id: \.offset) { index, msg in
+                    Text(msg)
                 }
             }
-
-            Spacer()
-
-            HStack {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .resizable()
-                    .frame(width: 50, height: 50)
-                    .foregroundColor(.gray)
-                Spacer()
-                Image(systemName: "speaker.wave.2.fill")
-                    .resizable()
-                    .frame(width: 50, height: 50)
-                    .foregroundColor(.gray)
-            }
-            .padding()
         }
-        .padding()
         .onAppear {
-            NetworkManager.shared.connectWebSocket { isReceiving in
-                self.isReceiving = isReceiving
-            }
-        }
-        .onDisappear {
-            NetworkManager.shared.disconnectWebSocket()
+            configureAudioSession()
+            networkManager.connect()
+            networkManager.startPlayback()
         }
     }
-
-    func startRecording() {
-        NetworkManager.shared.sendControlMessage("start") { response in
-            if response == "start_ack" {
-                let audioFilename = getDocumentsDirectory().appendingPathComponent("recording.wav")
-                let settings = [
-                    AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                    AVSampleRateKey: 44100,
-                    AVNumberOfChannelsKey: 2,
-                    AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                ]
-
-                do {
-                    audioRecorder = try AVAudioRecorder(url: audioFilename, settings: settings)
-                    audioRecorder?.isMeteringEnabled = true
-                    audioRecorder?.record()
-
-                    Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-                        guard let recorder = self.audioRecorder else {
-                            timer.invalidate()
-                            return
-                        }
-
-                        recorder.updateMeters()
-                        let data = try! Data(contentsOf: recorder.url)
-                        NetworkManager.shared.sendAudio(data: data)
+    
+    private func toggleRecording() {
+        isRecording.toggle()
+        if isRecording {
+            networkManager.sendControlMessage("start") { response in
+                if response == "start" || response == "start_ack" {
+                    DispatchQueue.main.async {
+                        networkManager.startRecording()
                     }
-                } catch {
-                    print("Failed to start recording: \(error)")
                 }
-            } else if response == "busy" {
-                isBusy = true
             }
+        } else {
+            networkManager.stopRecording()
+            networkManager.sendControlMessage("stop") { _ in }
         }
     }
-
-    func stopRecording() {
-        audioRecorder?.stop()
-        audioRecorder = nil
-        NetworkManager.shared.sendControlMessage("stop") { response in
-            if response == "stop_ack" {
-                isBusy = false
-            }
+    
+    private func configureAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try audioSession.setActive(true)
+            networkManager.log("Audio session configured and activated")
+        } catch {
+            networkManager.log("Failed to configure and activate audio session: \(error.localizedDescription)")
         }
-    }
-
-    func getDocumentsDirectory() -> URL {
-        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-        return paths[0]
     }
 }
 

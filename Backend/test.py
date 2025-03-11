@@ -3,8 +3,11 @@ import sys
 import websockets
 import sounddevice as sd
 import numpy as np
+import queue
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+
+BLOCKSIZE = 1024  # Adjust as needed
 
 class EventLoopThread(QThread):
     """
@@ -15,6 +18,7 @@ class EventLoopThread(QThread):
         self.loop = None
 
     def run(self):
+        # Create a new event loop for this thread and set it.
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
@@ -33,32 +37,36 @@ class WebSocketClient(QWidget):
         self.loop = loop_thread.loop
         self.log_emitter = LogEmitter()
         self.log_emitter.log_message.connect(self.on_log_message)
-
         self.initUI()
-
-        # Use single connection (control endpoint) for both control and audio.
+        # Use a unified connection (control endpoint) for both control and audio data.
         self.uri = "ws://walkietalkie.backend.marijndemul.nl/ws/control"
         self.is_recording = False
         self.is_receiving = False
 
+        # Create a queue to store received audio buffers.
+        self.audio_queue = queue.Queue()
+
+        # Create an OutputStream for continuous playback.
+        self.output_stream = sd.OutputStream(
+            samplerate=44100, channels=1, dtype='int16',
+            blocksize=BLOCKSIZE, callback=self.playback_callback
+        )
+        self.output_stream.start()
+
     def initUI(self):
         self.setWindowTitle("WebSocket Test Client")
         self.layout = QVBoxLayout()
-
         self.status_label = QLabel("Idle", self)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet("font-size: 16px;")
         self.layout.addWidget(self.status_label)
-
         self.text_area = QTextEdit(self)
         self.text_area.setReadOnly(True)
         self.layout.addWidget(self.text_area)
-
         self.send_button = QPushButton("Press to Talk", self)
         self.send_button.setStyleSheet("background-color: green; color: white; font-size: 16px; height: 50px;")
         self.send_button.clicked.connect(self.toggle_recording)
         self.layout.addWidget(self.send_button)
-
         self.setLayout(self.layout)
 
     def log(self, message: str):
@@ -67,8 +75,20 @@ class WebSocketClient(QWidget):
     def on_log_message(self, message: str):
         self.text_area.append(message)
 
+    def playback_callback(self, outdata, frames, time, status):
+        # Fetch audio data from the queue; if none is available, output silence.
+        try:
+            data = self.audio_queue.get_nowait()
+        except queue.Empty:
+            outdata.fill(0)
+        else:
+            # Pad with zeros if the chunk is smaller than requested.
+            if data.shape[0] < frames:
+                pad_width = frames - data.shape[0]
+                data = np.pad(data, ((0, pad_width), (0, 0)), mode='constant')
+            outdata[:] = data[:frames]
+
     async def connect(self):
-        # Connect to the control endpoint, which will be used for both control and audio.
         self.websocket = await websockets.connect(self.uri)
         self.log("Connected to WebSocket (control endpoint)")
 
@@ -80,25 +100,28 @@ class WebSocketClient(QWidget):
         return response
 
     async def send_audio(self, audio_data):
+        # Send audio data as binary.
         await self.websocket.send(audio_data)
         self.log(f"Sent audio data: {len(audio_data)} bytes")
 
     async def receive_audio(self):
+        # Continuously listen for messages.
         while self.is_recording:
             try:
-                # The unified connection will receive both control (text) and audio (bytes).
                 message = await self.websocket.recv()
             except Exception as e:
                 self.log(f"Error receiving audio: {e}")
                 break
-            # If we received binary data, play it.
             if isinstance(message, bytes):
-                audio_data = np.frombuffer(message, dtype=np.int16)
-                sd.play(audio_data, samplerate=44100)
-                self.log(f"Received and played audio data: {len(message)} bytes")
-            self.update_receiving_status(True)
-            await asyncio.sleep(0.1)
-            self.update_receiving_status(False)
+                if message:
+                    self.log(f"Received {len(message)} bytes of audio data")
+                    audio_data = np.frombuffer(message, dtype=np.int16).reshape(-1, 1)
+                    self.audio_queue.put(audio_data)
+                else:
+                    self.log("Received empty audio data")
+            elif isinstance(message, str):
+                self.log(f"Received text message (control): {message}")
+            await asyncio.sleep(0.01)
 
     def toggle_recording(self):
         self.is_recording = not self.is_recording
@@ -121,16 +144,16 @@ class WebSocketClient(QWidget):
             return
         response = await self.send_control_message("start")
         if response == "start_ack":
-            # Start recording audio using sounddevice.
             self.recording_stream = sd.InputStream(
                 callback=self.audio_callback,
                 channels=1,
                 samplerate=44100,
-                dtype=np.int16
+                dtype=np.int16,
+                blocksize=BLOCKSIZE
             )
             self.recording_stream.start()
             self.log("Started recording")
-            await self.receive_audio()
+            asyncio.ensure_future(self.receive_audio())
         else:
             self.log("Failed to set sender")
 
@@ -149,26 +172,14 @@ class WebSocketClient(QWidget):
             self.log(f"Captured audio data: {len(audio_data)} bytes")
             asyncio.run_coroutine_threadsafe(self.send_audio(audio_data), self.loop)
 
-    def update_receiving_status(self, is_receiving):
-        self.is_receiving = is_receiving
-        if self.is_receiving:
-            self.status_label.setText("Receiving Audio...")
-            self.status_label.setStyleSheet("color: blue; font-size: 16px;")
-        else:
-            self.status_label.setText("Idle")
-            self.status_label.setStyleSheet("color: black; font-size: 16px;")
-
 if __name__ == "__main__":
     loop_thread = EventLoopThread()
     loop_thread.start()
-
     app = QApplication(sys.argv)
     while loop_thread.loop is None:
         pass
-
     client = WebSocketClient(loop_thread)
     client.show()
-
     exit_code = app.exec_()
     loop_thread.stop_loop()
     loop_thread.quit()

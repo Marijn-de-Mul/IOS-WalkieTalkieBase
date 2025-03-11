@@ -10,9 +10,22 @@
 		842E967E2D8029D10079C582 /* WalkieTalkieBase.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WalkieTalkieBase.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8465B2902D80A3BA00CE7770 /* Exceptions for "WalkieTalkieBase" folder in "WalkieTalkieBase" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 842E967D2D8029D10079C582 /* WalkieTalkieBase */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		842E96802D8029D10079C582 /* WalkieTalkieBase */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8465B2902D80A3BA00CE7770 /* Exceptions for "WalkieTalkieBase" folder in "WalkieTalkieBase" target */,
+			);
 			path = WalkieTalkieBase;
 			sourceTree = "<group>";
 		};
@@ -255,6 +268,8 @@
 				DEVELOPMENT_TEAM = PN94HZY8DM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WalkieTalkieBase/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need access to your microphone to talk trough the walkie talkie.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -284,6 +299,8 @@
 				DEVELOPMENT_TEAM = PN94HZY8DM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WalkieTalkieBase/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need access to your microphone to talk trough the walkie talkie.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
