@@ -15,7 +15,6 @@ class EventLoopThread(QThread):
         self.loop = None
 
     def run(self):
-        # Create a new event loop for this thread and set it.
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
@@ -37,15 +36,13 @@ class WebSocketClient(QWidget):
 
         self.initUI()
 
-        self.uri = "ws://walkietalkie.backend.marijndemul.nl/ws"
-        self.control_uri = "ws://walkietalkie.backend.marijndemul.nl/ws/control"
-
+        # Use single connection (control endpoint) for both control and audio.
+        self.uri = "ws://walkietalkie.backend.marijndemul.nl/ws/control"
         self.is_recording = False
         self.is_receiving = False
 
     def initUI(self):
         self.setWindowTitle("WebSocket Test Client")
-
         self.layout = QVBoxLayout()
 
         self.status_label = QLabel("Idle", self)
@@ -65,21 +62,20 @@ class WebSocketClient(QWidget):
         self.setLayout(self.layout)
 
     def log(self, message: str):
-        """Emit a message so it can be appended to the text area on the main thread."""
         self.log_emitter.log_message.emit(message)
 
     def on_log_message(self, message: str):
-        """Called on the main thread to append messages to the text area."""
         self.text_area.append(message)
 
     async def connect(self):
+        # Connect to the control endpoint, which will be used for both control and audio.
         self.websocket = await websockets.connect(self.uri)
-        self.control_websocket = await websockets.connect(self.control_uri)
-        self.log("Connected to WebSocket")
+        self.log("Connected to WebSocket (control endpoint)")
 
     async def send_control_message(self, message):
-        await self.control_websocket.send(message)
-        response = await self.control_websocket.recv()
+        self.log(f"Sending control message: {message}")
+        await self.websocket.send(message)
+        response = await self.websocket.recv()
         self.log(f"Control response: {response}")
         return response
 
@@ -90,13 +86,16 @@ class WebSocketClient(QWidget):
     async def receive_audio(self):
         while self.is_recording:
             try:
-                received_message = await self.websocket.recv()
+                # The unified connection will receive both control (text) and audio (bytes).
+                message = await self.websocket.recv()
             except Exception as e:
                 self.log(f"Error receiving audio: {e}")
                 break
-            audio_data = np.frombuffer(received_message, dtype=np.int16)
-            sd.play(audio_data, samplerate=44100)
-            self.log(f"Received and played audio data: {len(received_message)} bytes")
+            # If we received binary data, play it.
+            if isinstance(message, bytes):
+                audio_data = np.frombuffer(message, dtype=np.int16)
+                sd.play(audio_data, samplerate=44100)
+                self.log(f"Received and played audio data: {len(message)} bytes")
             self.update_receiving_status(True)
             await asyncio.sleep(0.1)
             self.update_receiving_status(False)
@@ -122,6 +121,7 @@ class WebSocketClient(QWidget):
             return
         response = await self.send_control_message("start")
         if response == "start_ack":
+            # Start recording audio using sounddevice.
             self.recording_stream = sd.InputStream(
                 callback=self.audio_callback,
                 channels=1,
@@ -131,6 +131,8 @@ class WebSocketClient(QWidget):
             self.recording_stream.start()
             self.log("Started recording")
             await self.receive_audio()
+        else:
+            self.log("Failed to set sender")
 
     async def stop_recording(self):
         if hasattr(self, "recording_stream"):
