@@ -46,7 +46,10 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_bytes()
             print(f"Received data: {len(data)} bytes from {websocket.client}")
             if manager.current_sender == websocket:
+                print(f"Broadcasting data from sender: {websocket.client}")
                 await manager.broadcast(data)
+            else:
+                print(f"Received data from non-sender: {websocket.client}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
