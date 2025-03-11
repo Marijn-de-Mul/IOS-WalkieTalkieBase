@@ -1,46 +1,62 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from typing import List
-import os
-import uuid
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import List, Optional
 
 app = FastAPI()
 
-AUDIO_DIR = "audio_messages"
-os.makedirs(AUDIO_DIR, exist_ok=True)
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.current_sender: Optional[WebSocket] = None
 
-class Message(BaseModel):
-    sender: str
-    receiver: str
-    filename: str
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
 
-messages: List[Message] = []
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        if self.current_sender == websocket:
+            self.current_sender = None
 
-@app.post("/send_message/", response_model=Message)
-async def send_message(sender: str, receiver: str, file: UploadFile = File(...)):
-    filename = f"{uuid.uuid4()}.wav"
-    file_path = os.path.join(AUDIO_DIR, filename)
-    
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    
-    message = Message(sender=sender, receiver=receiver, filename=filename)
-    messages.append(message)
-    return message
+    async def broadcast(self, data: bytes):
+        for connection in self.active_connections:
+            await connection.send_bytes(data)
 
-@app.get("/get_messages/{receiver}", response_model=List[Message])
-def get_messages(receiver: str):
-    receiver_messages = [msg for msg in messages if msg.receiver == receiver]
-    return receiver_messages
+    async def set_sender(self, websocket: WebSocket):
+        if self.current_sender is None:
+            self.current_sender = websocket
+            return True
+        return False
 
-@app.get("/download_message/{filename}")
-def download_message(filename: str):
-    file_path = os.path.join(AUDIO_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    def clear_sender(self, websocket: WebSocket):
+        if self.current_sender == websocket:
+            self.current_sender = None
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            if manager.current_sender == websocket:
+                await manager.broadcast(data)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.websocket("/ws/control")
+async def websocket_control(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "start":
+                if await manager.set_sender(websocket):
+                    await websocket.send_text("start_ack")
+                else:
+                    await websocket.send_text("busy")
+            elif data == "stop":
+                manager.clear_sender(websocket)
+                await websocket.send_text("stop_ack")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
