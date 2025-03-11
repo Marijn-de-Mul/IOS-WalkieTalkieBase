@@ -7,7 +7,7 @@ import queue
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
-BLOCKSIZE = 1024  # Adjust as needed
+BLOCKSIZE = 1024  
 
 class EventLoopThread(QThread):
     """
@@ -18,7 +18,6 @@ class EventLoopThread(QThread):
         self.loop = None
 
     def run(self):
-        # Create a new event loop for this thread and set it.
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
@@ -38,15 +37,12 @@ class WebSocketClient(QWidget):
         self.log_emitter = LogEmitter()
         self.log_emitter.log_message.connect(self.on_log_message)
         self.initUI()
-        # Use a unified connection (control endpoint) for both control and audio data.
         self.uri = "ws://walkietalkie.backend.marijndemul.nl/ws/control"
         self.is_recording = False
         self.is_receiving = False
 
-        # Create a queue to store received audio buffers.
         self.audio_queue = queue.Queue()
 
-        # Create an OutputStream for continuous playback.
         self.output_stream = sd.OutputStream(
             samplerate=44100, channels=1, dtype='int16',
             blocksize=BLOCKSIZE, callback=self.playback_callback
@@ -76,13 +72,11 @@ class WebSocketClient(QWidget):
         self.text_area.append(message)
 
     def playback_callback(self, outdata, frames, time, status):
-        # Fetch audio data from the queue; if none is available, output silence.
         try:
             data = self.audio_queue.get_nowait()
         except queue.Empty:
             outdata.fill(0)
         else:
-            # Pad with zeros if the chunk is smaller than requested.
             if data.shape[0] < frames:
                 pad_width = frames - data.shape[0]
                 data = np.pad(data, ((0, pad_width), (0, 0)), mode='constant')
@@ -100,12 +94,10 @@ class WebSocketClient(QWidget):
         return response
 
     async def send_audio(self, audio_data):
-        # Send audio data as binary.
         await self.websocket.send(audio_data)
         self.log(f"Sent audio data: {len(audio_data)} bytes")
 
     async def receive_audio(self):
-        # Continuously listen for messages.
         while self.is_recording:
             try:
                 message = await self.websocket.recv()

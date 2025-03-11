@@ -52,6 +52,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"Received data from non-sender: {websocket.client}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+        
 @app.websocket("/ws/control")
 async def websocket_control(websocket: WebSocket):
     await manager.connect(websocket)
@@ -61,7 +62,6 @@ async def websocket_control(websocket: WebSocket):
                 message = await websocket.receive()
             except RuntimeError as e:
                 if "Cannot call" in str(e):
-                    # A disconnect message has already been received.
                     break
                 else:
                     raise e
