@@ -1,61 +1,102 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import List, Optional
+from typing import List, Dict, Optional
+import json
 
 app = FastAPI()
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self.current_sender: Optional[WebSocket] = None
+        self.active_connections: Dict[str, List[WebSocket]] = {}  # channel: [websocket]
+        self.channel_senders: Dict[str, WebSocket] = {}  # channel: websocket
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, channel: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
-        print(f"Client connected: {websocket.client}")
+        if channel not in self.active_connections:
+            self.active_connections[channel] = []
+        self.active_connections[channel].append(websocket)
+        print(f"Client connected to channel {channel}: {websocket.client}")
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        if self.current_sender == websocket:
-            self.current_sender = None
-        print(f"Client disconnected: {websocket.client}")
+    def disconnect(self, websocket: WebSocket, channel: str):
+        if channel in self.active_connections:
+            self.active_connections[channel].remove(websocket)
+            if not self.active_connections[channel]:
+                del self.active_connections[channel]  # Remove empty channel
+            if channel in self.channel_senders and self.channel_senders[channel] == websocket:
+                self.channel_senders.pop(channel)
+            print(f"Client disconnected from channel {channel}: {websocket.client}")
 
-    async def broadcast(self, data: bytes):
-        for connection in self.active_connections:
-            await connection.send_bytes(data)
-        print(f"Broadcasted data: {len(data)} bytes to {len(self.active_connections)} clients")
+    async def broadcast(self, data: bytes, channel: str, sender: WebSocket):
+        if channel in self.active_connections:
+            for connection in self.active_connections[channel]:
+                if connection != sender:  # Don't send back to the sender
+                    try:
+                        await connection.send_bytes(data)
+                    except Exception as e:
+                        print(f"Error broadcasting to {connection.client}: {e}")
+        print(f"Broadcasted data: {len(data)} bytes to {len(self.active_connections.get(channel, []))} clients in channel {channel}")
 
-    async def set_sender(self, websocket: WebSocket):
-        if self.current_sender is None:
-            self.current_sender = websocket
-            print(f"Sender set: {websocket.client}")
+    async def set_sender(self, websocket: WebSocket, channel: str):
+        if channel not in self.channel_senders:
+            self.channel_senders[channel] = websocket
+            print(f"Sender set for channel {channel}: {websocket.client}")
             return True
         return False
 
-    def clear_sender(self, websocket: WebSocket):
-        if self.current_sender == websocket:
-            self.current_sender = None
-            print(f"Sender cleared: {websocket.client}")
+    def clear_sender(self, websocket: WebSocket, channel: str):
+        if channel in self.channel_senders and self.channel_senders[channel] == websocket:
+            self.channel_senders.pop(channel)
+            print(f"Sender cleared for channel {channel}: {websocket.client}")
+
+    async def send_message(self, message: str, websocket: WebSocket):
+        try:
+            await websocket.send_text(message)
+        except Exception as e:
+            print(f"Error sending message to {websocket.client}: {e}")
 
 manager = ConnectionManager()
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+@app.websocket("/ws/{channel}")
+async def websocket_endpoint(websocket: WebSocket, channel: str):
+    await manager.connect(websocket, channel)
     try:
         while True:
-            data = await websocket.receive_bytes()
-            print(f"Received data: {len(data)} bytes from {websocket.client}")
-            if manager.current_sender == websocket:
-                print(f"Broadcasting data from sender: {websocket.client}")
-                await manager.broadcast(data)
-            else:
-                print(f"Received data from non-sender: {websocket.client}")
+            try:
+                message = await websocket.receive()
+            except RuntimeError as e:
+                if "Cannot call" in str(e):
+                    break
+                else:
+                    raise e
+            if "bytes" in message:
+                data = message["bytes"]
+                print(f"Received data: {len(data)} bytes from {websocket.client} in channel {channel}")
+                if channel in manager.channel_senders and manager.channel_senders[channel] == websocket:
+                    print(f"Broadcasting data from sender: {websocket.client} in channel {channel}")
+                    await manager.broadcast(data, channel, websocket)
+                else:
+                    print(f"Received data from non-sender: {websocket.client} in channel {channel}")
+            elif "text" in message:
+                text_data = message["text"]
+                try:
+                    data = json.loads(text_data)
+                    if "type" in data:
+                        if data["type"] == "iceCandidate" or data["type"] == "offer" or data["type"] == "answer":
+                            # Forward signaling messages to other clients in the channel
+                            for connection in manager.active_connections[channel]:
+                                if connection != websocket:
+                                    await manager.send_message(text_data, connection)
+                        else:
+                            print(f"Unknown message type: {data['type']}")
+                except json.JSONDecodeError:
+                    print(f"Received non-JSON text data: {text_data}")
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        
-@app.websocket("/ws/control")
-async def websocket_control(websocket: WebSocket):
-    await manager.connect(websocket)
+        manager.disconnect(websocket, channel)
+    finally:
+        manager.disconnect(websocket, channel)
+
+@app.websocket("/ws/control/{channel}")
+async def websocket_control(websocket: WebSocket, channel: str):
+    await manager.connect(websocket, channel)
     try:
         while True:
             try:
@@ -67,23 +108,28 @@ async def websocket_control(websocket: WebSocket):
                     raise e
             if "text" in message:
                 data = message["text"]
-                print(f"Received control message: {data} from {websocket.client}")
+                print(f"Received control message: {data} from {websocket.client} in channel {channel}")
                 if data == "start":
-                    if await manager.set_sender(websocket):
-                        await websocket.send_text("start_ack")
+                    if await manager.set_sender(websocket, channel):
+                        await manager.send_message("start_ack", websocket)
                     else:
-                        await websocket.send_text("busy")
+                        await manager.send_message("busy", websocket)
                 elif data == "stop":
-                    manager.clear_sender(websocket)
-                    await websocket.send_text("stop_ack")
+                    manager.clear_sender(websocket, channel)
+                    await manager.send_message("stop_ack", websocket)
+                elif data == "join_channel":
+                    # Notify other peers in the channel about the new peer
+                    for connection in manager.active_connections[channel]:
+                        if connection != websocket:
+                            await manager.send_message(f"peer_joined:{websocket.client}", connection)
             elif "bytes" in message:
                 data = message["bytes"]
-                print(f"Received binary data on control channel: {len(data)} bytes from {websocket.client}")
-                if manager.current_sender == websocket:
-                    await manager.broadcast(data)
+                print(f"Received binary data on control channel: {len(data)} bytes from {websocket.client} in channel {channel}")
+                if channel in manager.channel_senders and manager.channel_senders[channel] == websocket:
+                    await manager.broadcast(data, channel, websocket)
                 else:
-                    print(f"Binary data received from non-sender: {websocket.client}")
+                    print(f"Binary data received from non-sender: {websocket.client} in channel {channel}")
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, channel)
     finally:
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, channel)
