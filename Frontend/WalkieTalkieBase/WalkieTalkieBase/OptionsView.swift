@@ -6,6 +6,20 @@ struct OptionsView: View {
     var body: some View {
         NavigationView {
             Form {
+                Section(header: Text("Communication Mode").font(.headline)) {
+                    let modeBinding = Binding<Bool>(
+                        get: { networkManager.isPeerToPeer },
+                        set: { _ in networkManager.isPeerToPeer = false }
+                    )
+                    Picker("Mode", selection: modeBinding) {
+                        Text("Server").tag(false)
+                        Text("Peer-to-Peer (Coming Soon)")
+                            .tag(true)
+                            .disabled(true)
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                }
+
                 Section(header: Text("Advanced").font(.headline)) {
                     NavigationLink(destination: LogView(networkManager: networkManager)) {
                         Label("View Log", systemImage: "doc.text.magnifyingglass")
