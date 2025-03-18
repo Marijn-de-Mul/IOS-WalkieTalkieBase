@@ -1,13 +1,30 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import List, Dict, Optional
+from typing import List, Dict
+import sqlite3
 import json
 
 app = FastAPI()
 
+# In-memory SQLite database
+def init_db():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+    """)
+    cursor.execute("INSERT INTO channels (name) VALUES (?)", ("Default",))  
+    conn.commit()
+    return conn
+
+db_conn = init_db()
+
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str, List[WebSocket]] = {}  # channel: [websocket]
-        self.channel_senders: Dict[str, WebSocket] = {}  # channel: websocket
+        self.active_connections: Dict[str, List[WebSocket]] = {}  
+        self.channel_senders: Dict[str, WebSocket] = {}  
 
     async def connect(self, websocket: WebSocket, channel: str):
         await websocket.accept()
@@ -20,7 +37,7 @@ class ConnectionManager:
         if channel in self.active_connections:
             self.active_connections[channel].remove(websocket)
             if not self.active_connections[channel]:
-                del self.active_connections[channel]  # Remove empty channel
+                del self.active_connections[channel]  
             if channel in self.channel_senders and self.channel_senders[channel] == websocket:
                 self.channel_senders.pop(channel)
             print(f"Client disconnected from channel {channel}: {websocket.client}")
@@ -28,7 +45,7 @@ class ConnectionManager:
     async def broadcast(self, data: bytes, channel: str, sender: WebSocket):
         if channel in self.active_connections:
             for connection in self.active_connections[channel]:
-                if connection != sender:  # Don't send back to the sender
+                if connection != sender: 
                     try:
                         await connection.send_bytes(data)
                     except Exception as e:
@@ -54,6 +71,13 @@ class ConnectionManager:
             print(f"Error sending message to {websocket.client}: {e}")
 
 manager = ConnectionManager()
+
+@app.get("/api/channels")
+async def get_channels():
+    cursor = db_conn.cursor()
+    cursor.execute("SELECT name FROM channels")
+    channels = [row[0] for row in cursor.fetchall()]
+    return {"channels": channels}
 
 @app.websocket("/ws/{channel}")
 async def websocket_endpoint(websocket: WebSocket, channel: str):
@@ -81,7 +105,6 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
                     data = json.loads(text_data)
                     if "type" in data:
                         if data["type"] == "iceCandidate" or data["type"] == "offer" or data["type"] == "answer":
-                            # Forward signaling messages to other clients in the channel
                             for connection in manager.active_connections[channel]:
                                 if connection != websocket:
                                     await manager.send_message(text_data, connection)
@@ -109,7 +132,19 @@ async def websocket_control(websocket: WebSocket, channel: str):
             if "text" in message:
                 data = message["text"]
                 print(f"Received control message: {data} from {websocket.client} in channel {channel}")
-                if data == "start":
+                if data.startswith("new_channel:"):
+                    new_channel = data.split("new_channel:")[1]
+                    cursor = db_conn.cursor()
+                    try:
+                        cursor.execute("INSERT INTO channels (name) VALUES (?)", (new_channel,))
+                        db_conn.commit()
+                        for active_channel in manager.active_connections:
+                            for connection in manager.active_connections[active_channel]:
+                                await manager.send_message(f"new_channel:{new_channel}", connection)
+                        print(f"New channel created: {new_channel}")
+                    except sqlite3.IntegrityError:
+                        print(f"Channel {new_channel} already exists")
+                elif data == "start":
                     if await manager.set_sender(websocket, channel):
                         await manager.send_message("start_ack", websocket)
                     else:
@@ -118,7 +153,6 @@ async def websocket_control(websocket: WebSocket, channel: str):
                     manager.clear_sender(websocket, channel)
                     await manager.send_message("stop_ack", websocket)
                 elif data == "join_channel":
-                    # Notify other peers in the channel about the new peer
                     for connection in manager.active_connections[channel]:
                         if connection != websocket:
                             await manager.send_message(f"peer_joined:{websocket.client}", connection)
