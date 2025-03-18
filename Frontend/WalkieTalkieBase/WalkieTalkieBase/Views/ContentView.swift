@@ -2,9 +2,17 @@ import SwiftUI
 import AVFoundation
 
 struct ContentView: View {
-    @ObservedObject var networkManager = NetworkManager()
     @State private var showingAlert = false
     @Environment(\.scenePhase) private var scenePhase
+
+    @StateObject private var networkManager = NetworkManager()
+    @StateObject private var lifecycleManager: LifecycleManager
+
+    init() {
+        let networkManager = NetworkManager()
+        _networkManager = StateObject(wrappedValue: networkManager)
+        _lifecycleManager = StateObject(wrappedValue: LifecycleManager(networkManager: networkManager))
+    }
     
     var body: some View {
         TabView {

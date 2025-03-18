@@ -45,7 +45,6 @@ class NetworkManager: NSObject, ObservableObject {
         startWebSocketConnection()
     }
     
-    
     func startWebSocketConnection() {
         let urlString = "\(serverURL)/\(selectedChannel)"
         guard let url = URL(string: urlString) else {
